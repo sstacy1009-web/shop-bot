@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Магазин</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root { --bg: var(--tg-theme-bg-color, #fff); --tx: var(--tg-theme-text-color, #111); --hint: var(--tg-theme-hint-color, #888);
+          --card: var(--tg-theme-secondary-bg-color, #f2f2f5); --btn: var(--tg-theme-button-color, #2481cc); --btx: var(--tg-theme-button-text-color, #fff); }
+  * { box-sizing: border-box; margin: 0; }
+  body { font: 16px/1.4 -apple-system, system-ui, sans-serif; background: var(--bg); color: var(--tx);
+         padding: 12px 12px calc(90px + env(safe-area-inset-bottom)); }
+  h1 { font-size: 22px; margin: 4px 0 12px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .card { background: var(--card); border-radius: 14px; overflow: hidden; display: flex; flex-direction: column; }
+  .card img { width: 100%; aspect-ratio: 4/3; object-fit: cover; background: #ccc; }
+  .card .b { padding: 10px; display: flex; flex-direction: column; gap: 4px; flex: 1; }
+  .name { font-weight: 600; font-size: 15px; } .desc { color: var(--hint); font-size: 13px; flex: 1; }
+  .price { font-weight: 700; }
+  button { font: inherit; border: 0; border-radius: 10px; padding: 9px; background: var(--btn); color: var(--btx); }
+  .qty { display: flex; align-items: center; justify-content: space-between; }
+  .qty button { width: 38px; padding: 6px; font-weight: 700; }
+  .row { display: flex; gap: 10px; align-items: center; background: var(--card); border-radius: 12px; padding: 8px; margin-bottom: 8px; }
+  .row img { width: 56px; height: 56px; border-radius: 8px; object-fit: cover; }
+  .row .i { flex: 1; } .empty { color: var(--hint); text-align: center; margin-top: 40px; }
+  .back { background: none; color: var(--btn); padding: 4px 0; margin-bottom: 6px; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+const tg = Telegram.WebApp; tg.ready(); tg.expand();
+let products = [], currency = "RUB", view = "catalog";
+const cart = {}; // id -> qty
+
+const money = (v) => new Intl.NumberFormat("ru-RU", { style: "currency", currency }).format(v / 100);
+const total = () => Object.entries(cart).reduce((s, [id, q]) => s + products.find((p) => p.id == id).price * q, 0);
+const count = () => Object.values(cart).reduce((s, q) => s + q, 0);
+const change = (id, d) => { cart[id] = Math.max(0, (cart[id] || 0) + d); if (!cart[id]) delete cart[id]; render(); };
+
+function render() {
+  const el = document.getElementById("app");
+  if (view === "catalog") {
+    el.innerHTML = `<h1>Каталог</h1><div class="grid">${products.map((p) => `
+      <div class="card"><img src="${p.img}" alt=""><div class="b">
+        <div class="name">${p.name}</div><div class="desc">${p.desc}</div><div class="price">${money(p.price)}</div>
+        ${cart[p.id]
+          ? `<div class="qty"><button onclick="change(${p.id},-1)">−</button><b>${cart[p.id]}</b><button onclick="change(${p.id},1)">+</button></div>`
+          : `<button onclick="change(${p.id},1)">В корзину</button>`}
+      </div></div>`).join("")}</div>`;
+  } else {
+    el.innerHTML = `<button class="back" onclick="go('catalog')">← Назад в каталог</button><h1>Корзина</h1>` +
+      (count() ? Object.entries(cart).map(([id, q]) => { const p = products.find((x) => x.id == id); return `
+        <div class="row"><img src="${p.img}" alt=""><div class="i"><div class="name">${p.name}</div><div class="price">${money(p.price * q)}</div></div>
+        <div class="qty" style="gap:8px"><button onclick="change(${p.id},-1)">−</button><b>${q}</b><button onclick="change(${p.id},1)">+</button></div></div>`; }).join("")
+        : `<p class="empty">В корзине пока пусто. Добавьте товары из каталога.</p>`);
+  }
+  updateButton();
+}
+
+function go(v) { view = v; render(); }
+
+function updateButton() {
+  const mb = tg.MainButton;
+  if (!count()) return mb.hide();
+  mb.setText(view === "catalog" ? `Корзина · ${money(total())}` : `Оплатить ${money(total())}`);
+  mb.show();
+}
+
+tg.MainButton.onClick(async () => {
+  if (view === "catalog") return go("cart");
+  tg.MainButton.showProgress();
+  try {
+    const r = await fetch("/api/invoice", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items: Object.entries(cart).map(([id, qty]) => ({ id: +id, qty })) }),
+    }).then((r) => r.json());
+    if (!r.url) throw new Error(r.error || "Не удалось создать счёт");
+    tg.openInvoice(r.url, (status) => {
+      if (status === "paid") { tg.HapticFeedback.notificationOccurred("success"); tg.close(); }
+      else if (status === "failed") tg.showAlert("Оплата не прошла. Попробуйте ещё раз.");
+    });
+  } catch (e) { tg.showAlert(e.message); }
+  tg.MainButton.hideProgress();
+});
+
+fetch("/api/products").then((r) => r.json()).then((d) => { products = d.products; currency = d.currency; render(); });
+</script>
+</body>
+</html>
